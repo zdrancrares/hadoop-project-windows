@@ -644,8 +644,134 @@ sleep 60
 
 ---
 
-## Credits
+---
 
-- Base Docker images: [`asergiu/ubb:hadoop-*`](https://hub.docker.com/u/asergiu) (Universitatea Babeș-Bolyai)
-- Texts: [Project Gutenberg](https://www.gutenberg.org/)
-- Apache Hadoop 3.4.0
+## Demo Commands — Inspecting the Output
+
+After the job finishes, the inverted index lives in HDFS at `/output/part-r-00000`. All commands below assume you're inside the namenode container (`docker exec -it namenode bash`).
+
+### Basic exploration
+
+```bash
+# How many unique words are in the index?
+hdfs dfs -cat /output/part-r-00000 | wc -l
+
+# View the first 30 entries (alphabetically sorted)
+hdfs dfs -cat /output/part-r-00000 | head -30
+
+# View the last 30 entries (words starting with z, y, etc.)
+hdfs dfs -cat /output/part-r-00000 | tail -30
+
+# View a "middle slice" — useful for showing words past the boring "a*" section
+hdfs dfs -cat /output/part-r-00000 | sed -n '20000,20030p'
+
+# Total output file size
+hdfs dfs -du -h /output
+```
+
+### Search for specific words
+
+```bash
+# Look up a single word (case-insensitive)
+hdfs dfs -cat /output/part-r-00000 | grep -i "^juliet"
+hdfs dfs -cat /output/part-r-00000 | grep -i "^sherlock"
+hdfs dfs -cat /output/part-r-00000 | grep -i "^napoleon"
+hdfs dfs -cat /output/part-r-00000 | grep -i "^dracula"
+hdfs dfs -cat /output/part-r-00000 | grep -i "^whale"
+
+# Look up multiple words at once
+hdfs dfs -cat /output/part-r-00000 | grep -iE "^(juliet|romeo|mercutio)"
+
+# Words containing a substring (not just starting with)
+hdfs dfs -cat /output/part-r-00000 | grep -i "vampire"
+
+# Words ending in a specific suffix
+hdfs dfs -cat /output/part-r-00000 | grep -E "^[a-z]+ology\b"
+```
+
+### Cross-book queries
+
+```bash
+# Words that appear in ONLY one book — the file count is the number of "( ... )" groups
+hdfs dfs -cat /output/part-r-00000 | awk -F'(' 'NF==2 {print}' | head -10
+
+# Words that appear in MANY books (5+ books)
+hdfs dfs -cat /output/part-r-00000 | awk -F'(' 'NF>=6 {print $1}' | head -20
+
+# Words that appear in ALL 15 books (will be very common, but interesting)
+hdfs dfs -cat /output/part-r-00000 | awk -F'(' 'NF>=16 {print $1}' | head -20
+
+# Count how many distinct books each word appears in (top 20 most-spread words)
+hdfs dfs -cat /output/part-r-00000 \
+  | awk -F'(' '{print NF-1, $1}' \
+  | sort -rn | head -20
+```
+
+### Per-book queries
+
+```bash
+# Words that appear ONLY in moby_dick.txt (book-specific vocabulary)
+hdfs dfs -cat /output/part-r-00000 \
+  | grep "moby_dick.txt" \
+  | grep -v "(.*,.*).*(.*,.*)" \
+  | head -20
+
+# Most-mentioned characters in romeo_and_juliet.txt (rough heuristic — count line entries)
+hdfs dfs -cat /output/part-r-00000 \
+  | grep "romeo_and_juliet.txt" \
+  | awk -F'line' '{print NF-1, $1}' \
+  | sort -rn | head -20
+```
+
+### Stopwords verification (proves filtering works)
+
+```bash
+# These should return EMPTY — stopwords must not appear in the index
+hdfs dfs -cat /output/part-r-00000 | grep -E "^(the|a|and|of|to|in|is|it|that|for)\s"
+
+# Confirm the stopwords file is what was used
+hdfs dfs -cat /stopwords.txt
+```
+
+### Sanity checks
+
+```bash
+# Verify the input files are all in HDFS
+hdfs dfs -ls /input
+hdfs dfs -count /input    # shows: directories, files, total bytes
+
+# Show HDFS-level info: replication, block locations, etc.
+hdfs fsck /output/part-r-00000 -files -blocks -locations
+
+# Cluster status overview
+hdfs dfsadmin -report
+```
+
+### Save the output for offline inspection
+
+```bash
+# Inside the namenode container
+hdfs dfs -get /output/part-r-00000 /root/output.txt
+exit
+
+# From WSL (outside any container)
+docker cp namenode:/root/output.txt ~/inverted_index_output.txt
+ls -lh ~/inverted_index_output.txt
+```
+
+### Useful YARN / cluster commands for the demo
+
+```bash
+# List all applications run so far
+yarn application -list -appStates ALL
+
+# Show cluster nodes and their resource usage
+yarn node -list
+
+# Show details of a specific application
+yarn application -status <application_id>
+
+# Get full logs of a finished application
+yarn logs -applicationId <application_id> | less
+```
+
